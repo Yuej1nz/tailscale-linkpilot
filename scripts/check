@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$project_root"
+toolchain_root=$(./scripts/go env GOROOT)
+unformatted=$("$toolchain_root/bin/gofmt" -l cmd internal)
+if [ -n "$unformatted" ]; then
+    echo 'Formatting needs attention:' >&2
+    echo "$unformatted" >&2
+    exit 1
+fi
+./scripts/go test -race ./...
+./scripts/go vet ./...

@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$project_root"
+mkdir -p bin dist
+CGO_ENABLED=0 ./scripts/go build -trimpath -o bin/ts-direct ./cmd/ts-direct
+CGO_ENABLED=0 ./scripts/go build -trimpath -o bin/tslink ./cmd/tslink
+for target in linux/amd64 linux/arm64 windows/amd64 darwin/amd64 darwin/arm64; do
+    target_os=${target%/*}
+    target_arch=${target#*/}
+    for program in ts-direct tslink; do
+        output="dist/$program-$target_os-$target_arch"
+        if [ "$target_os" = windows ]; then output="$output.exe"; fi
+        GOOS=$target_os GOARCH=$target_arch CGO_ENABLED=0 ./scripts/go build -trimpath -o "$output" "./cmd/$program"
+    done
+done
+python3 - <<'PY'
+import hashlib,json,pathlib,subprocess
+root=pathlib.Path('dist')
+files=sorted(p for p in root.iterdir() if p.is_file() and p.suffix != '.zip' and (p.name.startswith('ts-direct-') or p.name.startswith('tslink-')))
+manifest={'product_release':subprocess.check_output(['bin/tslink','version'],text=True).strip(),'release':subprocess.check_output(['bin/ts-direct','version'],text=True).strip(),'files':[{'name':p.name,'size':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in files]}
+(root/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+print('Built',len(files),'platform binaries; manifest saved.')
+PY

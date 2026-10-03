@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -n "${TS_DIRECT_BOOTSTRAP_GO:-}" ]; then
+    bootstrap_go=$TS_DIRECT_BOOTSTRAP_GO
+elif [ -x /usr/local/go/bin/go ]; then
+    bootstrap_go=/usr/local/go/bin/go
+else
+    bootstrap_go=$(command -v go) || { echo 'Go 1.21 or later is needed to bootstrap the pinned toolchain.' >&2; exit 1; }
+fi
+case "$($bootstrap_go version)" in
+    *go1.19.*|*go1.20.*) echo 'Use TS_DIRECT_BOOTSTRAP_GO to select Go 1.21 or later.' >&2; exit 1 ;;
+esac
+export GOTOOLCHAIN=go1.26.6
+export GOMODCACHE="$project_root/toolchains/.cache/modcache"
+export GOCACHE="$project_root/toolchains/.cache/buildcache"
+cd "$project_root"
+exec "$bootstrap_go" "$@"

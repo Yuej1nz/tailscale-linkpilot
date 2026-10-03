@@ -1,0 +1,7 @@
+{
+  "toolchain": "go1.26.6",
+  "tailscale_module": "v1.102.4",
+  "tailscale_tag_commit": "bbcd7d1fc2054b9189ebc1531acf74bd880ca0c8",
+  "source": "https://proxy.golang.org/tailscale.com/@v/v1.102.4.info",
+  "phase": "P1 diagnostic; no daemon patches"
+}
