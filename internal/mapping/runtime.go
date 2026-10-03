@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -50,6 +51,65 @@ func runtimeDirectory() (string, error) {
 	return filepath.Join(home, ".ts-direct-runtime"), nil
 }
 
+// Keep peer paths short enough for macOS Unix sockets. The full identities are
+// checked in the live state, so the directory name is never an identity proof.
+func peerDirectory(self, peer string) (string, error) {
+	if self == "" || peer == "" || self == peer {
+		return "", errors.New("carrier requires distinct stable node identities")
+	}
+	root, err := runtimeDirectory()
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256([]byte(self + "\x00" + peer))
+	return filepath.Join(root, hex.EncodeToString(hash[:8])), nil
+}
+
+const MaxLocalSessions = 16
+
+func prepareSessionDirectory(ctx context.Context, input Input) (string, error) {
+	root, err := runtimeDirectory()
+	if err != nil {
+		return "", err
+	}
+	if err := privateDirectory(root, true); err != nil {
+		return "", err
+	}
+	dir, err := peerDirectory(input.SelfID, input.PeerID)
+	if err != nil {
+		return "", err
+	}
+	if s, _, err := ActiveFor(ctx, input.SelfID, input.PeerID); err == nil {
+		s.http.CloseIdleConnections()
+		return "", errors.New("a local source session for this peer is already active")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return "", err
+	}
+	live := 0
+	if s, _, err := Active(ctx); err == nil {
+		s.http.CloseIdleConnections()
+		live++
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || len(entry.Name()) != 16 {
+			continue
+		}
+		if s, _, err := activeIn(ctx, filepath.Join(root, entry.Name())); err == nil {
+			s.http.CloseIdleConnections()
+			live++
+		}
+	}
+	if live >= MaxLocalSessions {
+		return "", fmt.Errorf("local carrier limit reached (%d); existing sessions were preserved", MaxLocalSessions)
+	}
+	if err := privateDirectory(dir, true); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
 func randomToken() string {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
@@ -59,7 +119,7 @@ func randomToken() string {
 }
 
 func localSession(record Record) *LocalSession {
-	t := &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+	t := &http.Transport{Proxy: nil, DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", record.Socket)
 	}}
 	return &LocalSession{record: record, http: &http.Client{Transport: t, Timeout: 5 * time.Second}}
@@ -144,6 +204,34 @@ func Active(ctx context.Context) (*LocalSession, State, error) {
 	if err != nil {
 		return nil, State{}, err
 	}
+	return activeIn(ctx, dir)
+}
+
+// ActiveFor also recognizes an older single-session worker without moving or
+// restarting it. Another peer's legacy carrier is never returned or stopped.
+func ActiveFor(ctx context.Context, self, peer string) (*LocalSession, State, error) {
+	dir, err := peerDirectory(self, peer)
+	if err != nil {
+		return nil, State{}, err
+	}
+	if err := privateDirectory(filepath.Dir(dir), false); err != nil {
+		return nil, State{}, err
+	}
+	s, state, err := activeIn(ctx, dir)
+	if errors.Is(err, os.ErrNotExist) {
+		s, state, err = Active(ctx)
+	}
+	if err != nil {
+		return nil, State{}, err
+	}
+	if state.SelfID != self || state.PeerID != peer {
+		s.http.CloseIdleConnections()
+		return nil, State{}, errors.New("local carrier node identity mismatch")
+	}
+	return s, state, nil
+}
+
+func activeIn(ctx context.Context, dir string) (*LocalSession, State, error) {
 	if err := privateDirectory(dir, false); err != nil {
 		return nil, State{}, err
 	}
@@ -165,6 +253,7 @@ func Active(ctx context.Context) (*LocalSession, State, error) {
 	s := localSession(record)
 	state, err := s.State(ctx)
 	if err != nil || state.SessionID != record.SessionID {
+		s.http.CloseIdleConnections()
 		return nil, State{}, errors.New("no responsive matching carrier; previous runtime record may be stale")
 	}
 	return s, state, nil
@@ -177,10 +266,15 @@ func ServeWorker(ctx context.Context, cfg Config, check func(context.Context, In
 	if cfg.SessionID == "" || len(cfg.Token) != 32 || cfg.Prepare < time.Second || cfg.Prepare > 180*time.Second || cfg.Lease < time.Minute || cfg.Lease > 24*time.Hour || !cfg.Input.Native.IsValid() || !cfg.Input.Native.Addr().Is4() || len(cfg.Input.Peers) == 0 || len(cfg.Input.Peers) > 12 || len(cfg.Input.STUN) > 6 || cfg.Input.SelfDisco == [32]byte{} || cfg.Input.PeerDisco == [32]byte{} {
 		return errors.New("invalid carrier preparation")
 	}
-	dir, err := runtimeDirectory()
-	if err != nil || dir != cfg.Directory {
+	root, err := runtimeDirectory()
+	peerDir, peerErr := peerDirectory(cfg.Input.SelfID, cfg.Input.PeerID)
+	if err != nil || peerErr != nil || cfg.Directory != root && cfg.Directory != peerDir {
 		return errors.New("worker runtime directory mismatch")
 	}
+	if err := privateDirectory(root, true); err != nil {
+		return err
+	}
+	dir := cfg.Directory
 	if err := privateDirectory(dir, true); err != nil {
 		return err
 	}

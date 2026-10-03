@@ -286,7 +286,7 @@ func activeForPeer(ctx context.Context, opts Options, self, peer model.Node, gen
 	if opts.ActiveSession != nil {
 		s, state, err = opts.ActiveSession(ctx)
 	} else {
-		s, state, err = mapping.Active(ctx)
+		s, state, err = mapping.ActiveFor(ctx, self.ID, peer.ID)
 	}
 	if err != nil || !state.Committed || state.SelfID != self.ID || state.PeerID != peer.ID || state.Generation != generation || state.Stopped || time.Now().After(state.ExpiresAt) {
 		return nil

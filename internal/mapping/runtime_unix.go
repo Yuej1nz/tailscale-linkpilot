@@ -59,15 +59,9 @@ func privateSocket(path string) error {
 }
 
 func Spawn(ctx context.Context, input Input, tried []uint16, prepare, lease time.Duration) (Session, error) {
-	dir, err := runtimeDirectory()
+	dir, err := prepareSessionDirectory(ctx, input)
 	if err != nil {
 		return nil, err
-	}
-	if err := privateDirectory(dir, true); err != nil {
-		return nil, err
-	}
-	if _, _, err := Active(ctx); err == nil {
-		return nil, errors.New("a local source session is already active")
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -125,7 +119,7 @@ func Spawn(ctx context.Context, input Input, tried []uint16, prepare, lease time
 			_ = cmd.Process.Kill()
 			return nil, errors.New("local carrier readiness timed out")
 		case <-tick.C:
-			s, state, err := Active(ctx)
+			s, state, err := ActiveFor(ctx, input.SelfID, input.PeerID)
 			if err == nil && state.SessionID == cfg.SessionID {
 				return s, nil
 			}

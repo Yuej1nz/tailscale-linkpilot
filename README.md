@@ -1,6 +1,6 @@
 # Tailscale LinkPilot
 
-适用于 Tailscale 的第三方跨平台直连优化工具，命令为 **`tslink`**。当前版本 `0.6.0-macos-agent`，处于早期测试阶段。
+适用于 Tailscale 的第三方跨平台直连优化工具，命令为 **`tslink`**。当前版本 `0.7.0-all-peers`，处于早期测试阶段。
 
 两端已经加入 Tailscale 后，安装一次后台程序、选择目标。后台在有通信需求且连续确认中继时，尝试恢复直连；已有直连时保持观察。失败会退避，原生 Tailscale 仍可使用中继。
 
@@ -36,6 +36,24 @@ tslink disconnect my-server
 tslink doctor
 ```
 
+选择本机可见的全部节点，并持续纳入新节点：
+
+```text
+tslink connect --all
+tslink status
+tslink pause my-client
+tslink resume my-client
+tslink disconnect my-client
+tslink pause --all
+tslink resume --all
+```
+
+全节点模式按通信需求排队，重打洞任务串行执行，其他节点继续监测。`pause my-client` 保留暂停选择；`disconnect my-client` 将该节点排除，重复 `connect --all` 不会加回，可用 `connect my-client` 明确重新选择。`pause --all` 暂停整个本机调度，`resume --all` 保留单节点暂停；`disconnect --all` 清空目标并关闭自动发现，保留单独授予的入站协调权限。
+
+“全部”指官方客户端当前可见的节点，不包含 ACL 隐藏的节点。不会批量部署对端或授予权限，也不触发全网互相优化。空闲节点不主动探测；未部署、未授权或当前平台不支持的连接按状态显示。平台支持范围仍与上表相同。
+
+`status` 分别显示当前观察和上次优化验收；`optimize` 的返回结果绑定该次请求的业务验证，后续探测到直连不会覆盖失败结果。
+
 `optimize` 请求后台立即执行；`resume` 恢复自动监测。日常无需重复输入完整优化参数。
 
 对端已有程序时，需要明确授权本机：
@@ -65,6 +83,7 @@ Mac 首次 install 请求管理员授权，安装 root 持有的固定采集助�
 
 - 默认每轮最多 180 秒；禁止后台重启原生 Tailscale 或重新绑定其 socket。
 - 中继持续至少 20 秒并经三次确认后尝试，失败按 1 / 5 / 15 分钟退避。
+- 每轮最多探测八个有需求的目标，轮转监测与公平排队；本地最多保留十六个按节点隔离的辅助会话，达到上限保留已有会话。
 - 有效辅助会话默认保留 30 分钟；有需求且双向路径匹配时才续期。
 - 暂停、删除目标、身份或网络改变会取消或清理相应任务。
 

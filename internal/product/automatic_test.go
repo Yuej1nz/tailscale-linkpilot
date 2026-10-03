@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -57,9 +56,6 @@ func automaticClient(self, peer string, d *atomic.Bool) *adapter.Client {
 // verifier are exercised. The native client's relay/direct observations are
 // synthetic; this does not claim to emulate NAT or prove live hole punching.
 func TestAutomaticRelayTriggerRunsFullOptimizerWithoutManualRequest(t *testing.T) {
-	if runtime.GOOS == "linux" {
-		t.Skip("Linux product is the responder in this release")
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	direct := &atomic.Bool{}
@@ -88,14 +84,25 @@ func TestAutomaticRelayTriggerRunsFullOptimizerWithoutManualRequest(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := manager{store: s, backend: client, selfID: "client", states: map[string]State{}, renewed: map[string]time.Time{}, policies: map[string]*Policy{
+	m := manager{store: s, backend: client, selfID: "client", platform: "darwin", discover: func(context.Context, model.Node) (string, optimize.ProductInfo, error) {
+		// The Linux fixture verifies the desktop scheduling path. Native transport
+		// observations remain synthetic on every OS.
+		return "127.0.0.1:45829", optimize.ProductInfo{Authorized: true, PairedResponder: true}, nil
+	}, states: map[string]State{}, renewed: map[string]time.Time{}, policies: map[string]*Policy{
 		"server": {Generation: snap.NetworkGeneration, RelaySince: time.Now().Add(-21 * time.Second), RelaySamples: 2},
 	}}
+	defer m.stopJob()
 	if err = m.step(ctx, hub); err != nil {
 		t.Fatal(err)
 	}
+	for m.states["server"].Report == "" && ctx.Err() == nil {
+		time.Sleep(50 * time.Millisecond)
+		if err = m.step(ctx, hub); err != nil {
+			t.Fatal(err)
+		}
+	}
 	st := m.states["server"]
-	if st.Phase != "direct" || st.Requested != 0 || st.Report == "" {
+	if st.Path != "direct" || (st.Phase != "direct" && st.Phase != "idle") || st.Requested != 0 || st.Report == "" {
 		t.Fatal("automatic relay recovery did not finish", st)
 	}
 	data, err := os.ReadFile(st.Report)

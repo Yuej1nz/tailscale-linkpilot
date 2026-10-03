@@ -47,3 +47,17 @@ func TestActivityTracksBusinessWhenNativeTimestampIsStale(t *testing.T) {
 		t.Fatal("own LastWrite activated demand")
 	}
 }
+
+func TestSettlingOnePeerDoesNotHideAnotherPeersBusiness(t *testing.T) {
+	now := time.Now()
+	a := activityTracker{}
+	first := model.Peer{Node: model.Node{ID: "first"}, RxBytes: 100}
+	second := model.Peer{Node: model.Node{ID: "second"}, RxBytes: 100}
+	a.settle("wifi", []model.Peer{first, second})
+	first.RxBytes += 100  // Own diagnostic traffic.
+	second.RxBytes += 100 // Concurrent business on a different connection.
+	a.settle("wifi", []model.Peer{first})
+	if a.observe(now, "wifi", first) || !a.observe(now, "wifi", second) {
+		t.Fatal("one peer's probe masked another peer's communication demand")
+	}
+}

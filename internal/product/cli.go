@@ -13,6 +13,7 @@ import (
 
 	"github.com/Yuej1nz/tailscale-linkpilot/internal/adapter"
 	"github.com/Yuej1nz/tailscale-linkpilot/internal/diagnostic"
+	"github.com/Yuej1nz/tailscale-linkpilot/internal/model"
 )
 
 func Run(ctx context.Context, args []string, out, errOut io.Writer) int {
@@ -35,7 +36,7 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		}
 	}
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, Name+"（适用于 Tailscale 的第三方工具）\n\ntslink install                 安装本机后台服务\ntslink connect <设备>          启用自动优化\ntslink status                  查看后台与连接状态\ntslink optimize <设备>         立即优化\ntslink pause|resume <设备>     暂停或恢复自动优化\ntslink disconnect <设备>       停止优化关系\ntslink doctor                  检查运行条件\ntslink version\n\n未部署或未授权的对端：connect <设备> --ssh <SSH登录目标>\n完整发布包提供跨平台对端程序；后台不会猜测登录权限。")
+		fmt.Fprintln(out, Name+"（适用于 Tailscale 的第三方工具）\n\ntslink install                 安装本机后台服务\ntslink connect <设备>          启用自动优化\ntslink connect --all           自动跟踪本机可见的全部节点\ntslink status                  查看后台与连接状态\ntslink optimize <设备>         立即优化\ntslink pause|resume <设备>     暂停或恢复自动优化\ntslink pause|resume --all      暂停或恢复整个本机调度\ntslink disconnect <设备>       停止优化关系并从全节点模式排除\ntslink disconnect --all       停止全部本机目标和自动发现\ntslink doctor                  检查运行条件\ntslink version\n\n未部署或未授权的对端：connect <设备> --ssh <SSH登录目标>\n全节点模式不批量部署或授权对端；完整发布包提供跨平台对端程序。")
 		return 0
 	}
 	cmd := args[0]
@@ -148,6 +149,9 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		return 0
 	}
 	if cmd == "connect" {
+		if len(args) >= 2 && args[1] == "--all" {
+			return connectAll(ctx, s, snap, args[1:], out, errOut)
+		}
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
 			fmt.Fprintln(errOut, "tslink connect <设备> [--ssh <登录目标>]")
 			return 2
@@ -171,9 +175,11 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) int {
 				return errors.New("本机身份与配置不匹配")
 			}
 			c.SelfID = snap.Self.ID
+			c.include(p.ID)
 			c.Allow(p.ID)
 			if t, e := c.Find(p.ID); e == nil {
 				t.Enabled = true
+				t.Automatic = false
 				t.Requested = time.Now().UnixNano()
 			} else {
 				c.Targets = append(c.Targets, Target{ID: p.ID, Name: p.Name, Enabled: true, Requested: time.Now().UnixNano()})
@@ -218,42 +224,22 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		if len(args) != 2 {
 			return 2
 		}
+		if cmd == "optimize" {
+			v, e := s.Status()
+			if e != nil || v.Version != Version || !s.Online(snap.Self.ID) {
+				fmt.Fprintln(errOut, "后台离线或版本不匹配，请执行 tslink install 后再优化")
+				return 1
+			}
+		}
 		var id string
 		var request int64
 		err = s.Update(func(c *Config) error {
-			t, e := c.Find(args[1])
-			if e != nil {
-				return e
+			if c.SelfID != snap.Self.ID {
+				return errors.New("尚未安装或本机身份不匹配")
 			}
-			id = t.ID
-			switch cmd {
-			case "pause":
-				t.Enabled = false
-			case "resume":
-				t.Enabled = true
-			case "optimize":
-				if !t.Enabled {
-					return errors.New("目标已暂停，请先 resume")
-				}
-				t.Requested = time.Now().UnixNano()
-				request = t.Requested
-			case "disconnect":
-				result := c.Targets[:0]
-				for _, other := range c.Targets {
-					if other.ID != id {
-						result = append(result, other)
-					}
-				}
-				c.Targets = result
-				allowed := c.Allowed[:0]
-				for _, p := range c.Allowed {
-					if p != id {
-						allowed = append(allowed, p)
-					}
-				}
-				c.Allowed = allowed
-			}
-			return nil
+			var e error
+			id, request, e = applyTargetCommand(c, cmd, args[1], time.Now().UnixNano())
+			return e
 		})
 		if err != nil {
 			fmt.Fprintln(errOut, err)
@@ -267,6 +253,53 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) int {
 	}
 	fmt.Fprintln(errOut, "未知命令:", cmd)
 	return 2
+}
+
+func connectAll(ctx context.Context, s Store, snap *model.Report, args []string, out, errOut io.Writer) int {
+	if len(args) != 1 || args[0] != "--all" {
+		fmt.Fprintln(errOut, "tslink connect --all（不接受批量 SSH 部署参数）")
+		return 2
+	}
+	if err := s.Update(func(c *Config) error {
+		if c.SelfID != "" && c.SelfID != snap.Self.ID {
+			return errors.New("本机身份与配置不匹配")
+		}
+		c.SelfID = snap.Self.ID
+		c.AllPeers = true
+		c.reconcile(snap)
+		return nil
+	}); err != nil {
+		fmt.Fprintln(errOut, err)
+		return 1
+	}
+	state, err := s.Status()
+	if err != nil || !s.Online(snap.Self.ID) || state.Version != Version {
+		cfg, err := s.Config()
+		if err != nil {
+			fmt.Fprintln(errOut, err)
+			return 1
+		}
+		started := time.Now().UTC()
+		if err := Install(ctx, s, nil, cfg.SudoRestun); err != nil {
+			fmt.Fprintln(errOut, err)
+			return 1
+		}
+		if err := waitReady(ctx, s, 20*time.Second, started); err != nil {
+			fmt.Fprintln(errOut, "全节点配置已保存，但后台启动验证失败:", err)
+			return 1
+		}
+	}
+	c, err := s.Config()
+	if err != nil {
+		fmt.Fprintln(errOut, err)
+		return 1
+	}
+	fmt.Fprintf(out, "已启用本机全节点模式，当前跟踪 %d 个目标，排除 %d 个节点。\n", len(c.Targets), len(c.Excluded))
+	fmt.Fprintln(out, "后台按通信需求串行优化；新节点自动纳入，不自动授予协调权限或部署对端。使用 tslink status 查看结果。")
+	if c.Paused {
+		fmt.Fprintln(out, "本机调度仍处于暂停状态，使用 tslink resume --all 恢复。")
+	}
+	return 0
 }
 func flagExit(err error) int {
 	if errors.Is(err, flag.ErrHelp) {
@@ -283,7 +316,7 @@ func waitReady(ctx context.Context, s Store, timeout time.Duration, started time
 		state, e := s.Status()
 		var pulse Heartbeat
 		_ = readJSON(filepath.Join(s.Dir, "heartbeat.json"), &pulse)
-		if e == nil && s.Online(state.SelfID) && pulse.At.After(started) {
+		if e == nil && state.Version == Version && s.Online(state.SelfID) && pulse.At.After(started) {
 			return nil
 		}
 		select {
@@ -305,22 +338,21 @@ func waitOptimization(ctx context.Context, s Store, id string, request int64, ou
 		v, e := s.Status()
 		if e == nil {
 			for _, st := range v.States {
-				if st.ID != id || st.Requested != request {
+				if st.ID != id || st.LastOptimization == nil || st.LastOptimization.Request != request {
 					continue
 				}
-				if st.Phase == "direct" || st.Phase == "backoff" || st.Phase == "setup_required" || st.Phase == "responder_only" {
-					fmt.Fprintf(out, "%s: %s\n", st.Name, st.Phase)
-					if st.Error != "" {
-						fmt.Fprintln(errOut, st.Error)
-					}
-					if st.Report != "" {
-						fmt.Fprintln(out, "报告:", st.Report)
-					}
-					if st.Phase == "direct" {
-						return 0
-					}
-					return 1
+				result := st.LastOptimization
+				fmt.Fprintf(out, "%s: %s\n", st.Name, result.Outcome)
+				if result.Error != "" {
+					fmt.Fprintln(errOut, result.Error)
 				}
+				if result.Report != "" {
+					fmt.Fprintln(out, "报告:", result.Report)
+				}
+				if result.DirectVerified {
+					return 0
+				}
+				return 1
 			}
 		}
 		select {
@@ -357,14 +389,20 @@ func status(s Store, args []string, out, errOut io.Writer) int {
 		return 0
 	}
 	fmt.Fprintf(out, "%s %s\n后台在线: %t\n", Name, Version, online)
+	fmt.Fprintf(out, "全节点模式: %t | 调度暂停: %t | 排除节点: %d\n", c.AllPeers, c.Paused, len(c.Excluded))
 	if len(c.Targets) == 0 {
-		fmt.Fprintln(out, "尚未选择目标：tslink connect <设备>")
+		if c.AllPeers {
+			fmt.Fprintln(out, "当前没有可见的未排除目标，后台将继续发现节点。")
+		} else {
+			fmt.Fprintln(out, "尚未选择目标：tslink connect <设备> 或 tslink connect --all")
+		}
 	}
 	for _, t := range c.Targets {
 		phase := "等待后台"
 		latency := 0.0
 		detail := ""
-		if !t.Enabled {
+		path := "unknown"
+		if !t.Enabled || c.Paused {
 			phase = "paused"
 		}
 		if online {
@@ -373,12 +411,22 @@ func status(s Store, args []string, out, errOut io.Writer) int {
 					phase = st.Phase
 					latency = st.LatencyMS
 					detail = st.Error
+					if st.Path != "" {
+						path = st.Path
+					}
 				}
 			}
 		}
-		fmt.Fprintf(out, "%s  %s  %.1f ms  自动优化: %t\n", t.Name, phase, latency, t.Enabled)
+		fmt.Fprintf(out, "%s  %s  %.1f ms  最后检测路径: %s  自动优化: %t\n", t.Name, phase, latency, path, t.Enabled && !c.Paused)
 		if detail != "" {
 			fmt.Fprintln(out, "  "+detail)
+		}
+		if online {
+			for _, st := range v.States {
+				if st.ID == t.ID && st.LastOptimization != nil {
+					fmt.Fprintf(out, "  上次优化验收: %t | %s\n", st.LastOptimization.DirectVerified, st.LastOptimization.Outcome)
+				}
+			}
 		}
 	}
 	if !online {

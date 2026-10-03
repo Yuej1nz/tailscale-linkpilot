@@ -11,13 +11,14 @@ import (
 
 const Name = "Tailscale LinkPilot"
 const Command = "tslink"
-const Version = "0.6.0-macos-agent"
+const Version = "0.7.0-all-peers"
 const Port = 45829
 
 type Target struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Enabled     bool   `json:"enabled"`
+	Automatic   bool   `json:"automatically_selected,omitempty"`
 	Requested   int64  `json:"requested,omitempty"`
 	Coordinator string `json:"coordinator,omitempty"`
 }
@@ -27,18 +28,31 @@ type Config struct {
 	Allowed    []string `json:"allowed_peers"`
 	Targets    []Target `json:"targets"`
 	SudoRestun bool     `json:"sudo_restun,omitempty"`
+	AllPeers   bool     `json:"all_peers,omitempty"`
+	Paused     bool     `json:"paused,omitempty"`
+	Excluded   []string `json:"excluded_peers,omitempty"`
 }
 type State struct {
-	Requested int64     `json:"requested,omitempty"`
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Phase     string    `json:"phase"`
-	Path      string    `json:"path,omitempty"`
-	LatencyMS float64   `json:"latency_ms,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	Updated   time.Time `json:"updated_at"`
-	NextTry   time.Time `json:"next_try,omitempty"`
-	Report    string    `json:"report,omitempty"`
+	LastOptimization *Completion `json:"last_optimization,omitempty"`
+	Requested        int64       `json:"requested,omitempty"`
+	ID               string      `json:"id"`
+	Name             string      `json:"name"`
+	Phase            string      `json:"phase"`
+	Path             string      `json:"path,omitempty"`
+	LatencyMS        float64     `json:"latency_ms,omitempty"`
+	Error            string      `json:"error,omitempty"`
+	Updated          time.Time   `json:"updated_at"`
+	NextTry          time.Time   `json:"next_try,omitempty"`
+	Report           string      `json:"report,omitempty"`
+}
+
+// Current path observations must never overwrite a completed request's proof.
+type Completion struct {
+	Request        int64  `json:"request"`
+	Outcome        string `json:"outcome"`
+	DirectVerified bool   `json:"direct_verified"`
+	Error          string `json:"error,omitempty"`
+	Report         string `json:"report,omitempty"`
 }
 type Status struct {
 	Version string    `json:"version"`
@@ -142,9 +156,21 @@ func (c *Config) Allow(id string) {
 }
 func (c *Config) Find(selector string) (*Target, error) {
 	for i := range c.Targets {
-		if c.Targets[i].ID == selector || c.Targets[i].Name == selector {
+		if c.Targets[i].ID == selector {
 			return &c.Targets[i], nil
 		}
+	}
+	var found *Target
+	for i := range c.Targets {
+		if c.Targets[i].Name == selector {
+			if found != nil {
+				return nil, fmt.Errorf("目标名称 %q 不唯一，请使用节点 ID", selector)
+			}
+			found = &c.Targets[i]
+		}
+	}
+	if found != nil {
+		return found, nil
 	}
 	return nil, fmt.Errorf("目标 %q 尚未连接", selector)
 }
