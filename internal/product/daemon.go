@@ -61,9 +61,15 @@ func Daemon(ctx context.Context, s Store) error {
 	defer hub.Close()
 
 	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
-	defer stopHeartbeat()
+	heartbeatDone := make(chan struct{})
+	defer func() {
+		stopHeartbeat()
+		<-heartbeatDone
+		_ = os.Remove(filepath.Join(s.Dir, "heartbeat.json"))
+	}()
 	_ = s.Pulse(c.SelfID)
 	go func() {
+		defer close(heartbeatDone)
 		tick := time.NewTicker(5 * time.Second)
 		defer tick.Stop()
 		for {

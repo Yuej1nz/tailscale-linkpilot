@@ -7,7 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -36,16 +38,35 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		}
 	}
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, Name+"（适用于 Tailscale 的第三方工具）\n\ntslink install                 安装本机后台服务\ntslink connect <设备>          启用自动优化\ntslink connect --all           自动跟踪本机可见的全部节点\ntslink status                  查看后台与连接状态\ntslink optimize <设备>         立即优化\ntslink pause|resume <设备>     暂停或恢复自动优化\ntslink pause|resume --all      暂停或恢复整个本机调度\ntslink disconnect <设备>       停止优化关系并从全节点模式排除\ntslink disconnect --all       停止全部本机目标和自动发现\ntslink doctor                  检查运行条件\ntslink version\n\n未部署或未授权的对端：connect <设备> --ssh <SSH登录目标>\n全节点模式不批量部署或授权对端；完整发布包提供跨平台对端程序。")
+		fmt.Fprintln(out, Name+"（适用于 Tailscale 的第三方工具）\n\ntslink install                 安装本机后台服务\ntslink start                   启动后台，已运行时保持不变\ntslink stop                    停止后台，保留配置\ntslink restart                 重启后台并验证健康\ntslink connect <设备>          启用自动优化\ntslink connect --all           自动跟踪本机可见的全部节点\ntslink status                  查看后台与连接状态\ntslink optimize <设备>         立即优化\ntslink pause|resume <设备>     暂停或恢复自动优化\ntslink pause|resume --all      暂停或恢复整个本机调度\ntslink disconnect <设备>       停止优化关系并从全节点模式排除\ntslink disconnect --all       停止全部本机目标和自动发现\ntslink doctor                  检查运行条件\ntslink version\n\n未部署或未授权的对端：connect <设备> --ssh <SSH登录目标>\n全节点模式不批量部署或授权对端；完整发布包提供跨平台对端程序。")
 		return 0
 	}
 	cmd := args[0]
+	if cmd == "start" || cmd == "stop" || cmd == "restart" {
+		if len(args) != 1 {
+			fmt.Fprintln(errOut, "用法：tslink "+cmd)
+			return 2
+		}
+		if err = manageService(ctx, s, cmd, out); err != nil {
+			fmt.Fprintln(errOut, err)
+			return 1
+		}
+		return 0
+	}
 	if cmd == "version" {
 		fmt.Fprintln(out, Name+" "+Version)
 		return 0
 	}
 	if cmd == "daemon" {
 		if err = Daemon(ctx, s); err != nil {
+			// Windows tasks do not capture stderr. Keep startup/exit failures
+			// available to the user without depending on Task Scheduler history.
+			if runtime.GOOS == "windows" {
+				if f, e := os.OpenFile(filepath.Join(s.Dir, "daemon.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); e == nil {
+					fmt.Fprintln(f, time.Now().UTC().Format(time.RFC3339), err)
+					f.Close()
+				}
+			}
 			fmt.Fprintln(errOut, err)
 			return 1
 		}
@@ -308,6 +329,10 @@ func flagExit(err error) int {
 	return 2
 }
 func waitReady(ctx context.Context, s Store, timeout time.Duration, started time.Time) error {
+	cfg, err := s.Config()
+	if err != nil || cfg.SelfID == "" {
+		return errors.New("本机配置未就绪，请执行 tslink install")
+	}
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(250 * time.Millisecond)
@@ -316,7 +341,7 @@ func waitReady(ctx context.Context, s Store, timeout time.Duration, started time
 		state, e := s.Status()
 		var pulse Heartbeat
 		_ = readJSON(filepath.Join(s.Dir, "heartbeat.json"), &pulse)
-		if e == nil && state.Version == Version && s.Online(state.SelfID) && pulse.At.After(started) {
+		if e == nil && state.Version == Version && state.SelfID == cfg.SelfID && s.Online(cfg.SelfID) && pulse.At.After(started) {
 			return nil
 		}
 		select {

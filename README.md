@@ -1,6 +1,6 @@
 # Tailscale LinkPilot
 
-适用于 Tailscale 的第三方跨平台直连优化工具，命令为 **`tslink`**。当前版本 `0.7.0-all-peers`，处于早期测试阶段。
+适用于 Tailscale 的第三方跨平台直连优化工具，命令为 **`tslink`**。当前版本 `0.8.0-service-controls`，处于早期测试阶段。
 
 两端已经加入 Tailscale 后，安装一次后台程序、选择目标。后台在有通信需求且连续确认中继时，尝试恢复直连；已有直连时保持观察。失败会退避，原生 Tailscale 仍可使用中继。
 
@@ -28,6 +28,9 @@ Windows ARM64、手机端、任意 NAT 之间的双桌面响应、原生 IPv6 �
 先确保 Tailscale 已登录，设备之间允许互访。选择自己的节点名称，不复制历史实验的地址。
 
 ```text
+tslink start
+tslink stop
+tslink restart
 tslink status
 tslink optimize my-server
 tslink pause my-server
@@ -35,6 +38,10 @@ tslink resume my-server
 tslink disconnect my-server
 tslink doctor
 ```
+
+三个平台使用同样的后台管理命令。`start` 已运行时不会重启；`stop` 保留目标、暂停选择、全节点模式和协调授权；`restart` 等待旧进程结束，再启动并验证新鲜健康状态。关闭终端不影响后台。首次使用执行 `install`，日常启动不重新安装，也不重新申请安装权限。`stop` 停止本次登录会话中的后台；下次登录仍按安装时的设置自动启动。重复停止不会报错。未安装时提示先安装，停止不要求原生 Tailscale 当前在线。
+
+`start / stop / restart` 管理整个本机后台；`pause / resume` 管理单个目标或本机自动调度。已安装程序升级后重新执行 `install` 更新登记位置。Windows 退出错误写入 `%APPDATA%\tslink\daemon.log`；Mac 使用配置目录的 `daemon.log`，Linux 使用用户服务日志。
 
 选择本机可见的全部节点，并持续纳入新节点：
 

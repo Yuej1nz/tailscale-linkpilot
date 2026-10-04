@@ -16,7 +16,7 @@ import (
 func quote(s string) string   { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 func psQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 func powershell(ctx context.Context, code string) error {
-	code = "$ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; " + code
+	code = "$ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; trap { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }; " + code
 	words := utf16.Encode([]rune(code))
 	raw := make([]byte, len(words)*2)
 	for i, v := range words {
@@ -97,16 +97,37 @@ if(-not ($paths | Where-Object {[Environment]::ExpandEnvironmentVariables($_).Tr
  [Environment]::SetEnvironmentVariable('Path',(($paths+$bin)-join ';'),'User')
 }
 $user=[Security.Principal.WindowsIdentity]::GetCurrent().Name
-$a=New-ScheduledTaskAction -Execute ` + psQuote(exe) + ` -Argument ` + psQuote(args) + `
-$t=New-ScheduledTaskTrigger -AtLogOn -User $user
-$p=New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
-$settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-Register-ScheduledTask -TaskName 'Tailscale LinkPilot' -Action $a -Trigger $t -Principal $p -Settings $settings -Force | Out-Null
-$rule=Get-NetFirewallRule -DisplayName 'Tailscale LinkPilot coordination' -ErrorAction SilentlyContinue
-if($rule){$rule | Remove-NetFirewallRule}
-New-NetFirewallRule -DisplayName 'Tailscale LinkPilot coordination' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 45829 -RemoteAddress '100.64.0.0/10','fd7a:115c:a1e0::/48' -Program ` + psQuote(exe) + ` | Out-Null
-Stop-ScheduledTask -TaskName 'Tailscale LinkPilot' -ErrorAction SilentlyContinue
-Start-ScheduledTask -TaskName 'Tailscale LinkPilot'
+$scheduler=New-Object -ComObject 'Schedule.Service';$scheduler.Connect()
+$folder=$scheduler.GetFolder('\')
+$definition=$scheduler.NewTask(0)
+$definition.RegistrationInfo.Description='Tailscale LinkPilot user background service'
+$definition.Principal.UserId=$user
+$definition.Principal.LogonType=3
+$definition.Principal.RunLevel=1
+$definition.Settings.ExecutionTimeLimit='PT0S'
+$definition.Settings.RestartCount=5
+$definition.Settings.RestartInterval='PT1M'
+$definition.Settings.MultipleInstances=2
+$definition.Settings.DisallowStartIfOnBatteries=$false
+$definition.Settings.StopIfGoingOnBatteries=$false
+$trigger=$definition.Triggers.Create(9);$trigger.UserId=$user
+$action=$definition.Actions.Create(0)
+$action.Path=` + psQuote(exe) + `
+$action.Arguments=` + psQuote(args) + `
+try {$previous=$folder.GetTask('Tailscale LinkPilot')} catch {
+ if($_.Exception.HResult -ne -2147024894){throw}
+}
+if($null -ne $previous){$previous.Stop(0)}
+$task=$folder.RegisterTaskDefinition('Tailscale LinkPilot',$definition,6,$user,$null,3,$null)
+$policy=New-Object -ComObject 'HNetCfg.FwPolicy2'
+try {$rule=$policy.Rules.Item('Tailscale LinkPilot coordination')} catch {$rule=$null}
+if($null -eq $rule){$rule=New-Object -ComObject 'HNetCfg.FWRule';$rule.Name='Tailscale LinkPilot coordination'}
+$rule.ApplicationName=` + psQuote(exe) + `
+$rule.Direction=1;$rule.Action=1;$rule.Protocol=6;$rule.LocalPorts='45829'
+$rule.RemoteAddresses='100.64.0.0/10,fd7a:115c:a1e0::/48'
+$rule.Profiles=2147483647;$rule.Enabled=$true
+if(-not ($policy.Rules | Where-Object {$_.Name -eq $rule.Name})){$policy.Rules.Add($rule)}
+$null=$task.Run($null)
 `
 		return powershell(ctx, code)
 	case "darwin":

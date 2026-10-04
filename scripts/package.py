@@ -18,11 +18,17 @@ for system, arch in targets:
             archive.write(helper, f"delivery/{helper.name}")
         archive.writestr("START.txt", """Tailscale LinkPilot - third-party private beta
 Install once: tslink install
+Start background: tslink start
+Stop background (keep config): tslink stop
+Restart background: tslink restart
+Check state: tslink status
 Choose a peer: tslink connect <peer>
 Missing peer helper: tslink connect <peer> --ssh <management-login>
 SSH requires your own management access; no password is saved.
 Existing helpers accept new authorization without restart.
 Windows: install as administrator; the task runs at user login.
+Daily start/stop/restart use the installed user background service; they do not reinstall.
+Stop ends the current run; the next login still starts the installed service.
 Linux: coordination responder in this release.
 macOS: install asks once for admin authorization of the protected discovery-only capture helper.
 macOS: daily optimization uses a user LaunchAgent; keep the user logged in and Mac awake.

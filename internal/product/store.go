@@ -11,7 +11,7 @@ import (
 
 const Name = "Tailscale LinkPilot"
 const Command = "tslink"
-const Version = "0.7.0-all-peers"
+const Version = "0.8.0-service-controls"
 const Port = 45829
 
 type Target struct {

@@ -1,6 +1,6 @@
 # Tailscale LinkPilot 产品指南
 
-产品命令 `tslink`，当前版本 `0.7.0-all-peers`。这是与官方 Tailscale 配合的第三方测试程序。
+产品命令 `tslink`，当前版本 `0.8.0-service-controls`。这是与官方 Tailscale 配合的第三方测试程序。
 
 ## 安装与选择目标
 
@@ -31,6 +31,9 @@ tslink revoke my-client
 ## 日常命令
 
 ```text
+tslink start
+tslink stop
+tslink restart
 tslink status
 tslink status --json
 tslink optimize my-server
@@ -39,6 +42,14 @@ tslink resume my-server
 tslink disconnect my-server
 tslink doctor
 ```
+
+`start / stop / restart` 在三个系统上保持相同用法。内部管理已登记的用户后台：Mac 为 LaunchAgent，Windows 为当前用户的计划任务，Linux 为用户 systemd 服务。无需输入系统服务名称。首次安装仍用 `install`，日常服务控制不重新登记、不增加权限；更新二进制位置后重新执行 `install`。
+
+重复 `start` 不打断健康进程。`stop` 确认后台已经停止后才显示离线，保留目标、暂停、排除列表、全节点模式与协调授权；即使原生 Tailscale 离线也可以停止。`restart` 等待旧后台释放进程锁，再等待新版本、相同本机身份的新鲜心跳。旧心跳、仅向系统提交启动请求均不计为启动成功。带有其他配置目录的调用不能控制当前登记的服务。
+
+停止只结束当前运行，安装时的登录自动启动设置保留；下次登录仍自动启动。希望仅暂停自动优化时用 `pause --all`，其选择会持久保留。停止或重启后台可能结束其持有的辅助会话，后续按需求重新确认路径；不会停止原生 Tailscale。
+
+Windows 启停通过官方 Task Scheduler COM 接口，不依赖可能缺失的 ScheduledTasks CIM provider。退出错误保留在 `%APPDATA%\tslink\daemon.log`。Mac 日志在配置目录的 `daemon.log`；Linux 可用 `journalctl --user -u tslink.service` 查看。
 
 `optimize` 请求后台立即执行并等待结果。`pause` 取消优化并清理本机辅助会话，尝试清理对端对应会话；`resume` 仅恢复监测。`disconnect` 删除本机目标和对应本地授权，不自动替对端撤销授权，也不停止原生 Tailscale。
 
